@@ -4,10 +4,12 @@ on:
   push:
     branches:
       - main
+      - '0.9'
       - 'release-*'
   pull_request:
     branches:
       - main
+      - '0.9'
 
 permissions:
   contents: read

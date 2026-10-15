@@ -5,6 +5,18 @@
 
 # llm-d Router
 
+## DistKV integration
+
+The `0.9` branch maintains SGLang/vLLM cache routing on upstream `v0.9.0`
+(`5f4e762f341a5196393ce79f8a57c3e1900c4a6b`). Configuration and deployment live in
+[DistKV](https://github.com/IIC-SIG-MLsys/DistKV/tree/main/deploy/llm-d).
+
+Submit integration PRs against `0.9`. Start each new release branch, such as
+`0.10`, from its upstream release tag. Compare upstream implementations before
+porting the required integration commits, and test each release independently.
+DistKV pins this repository by commit; images use that commit as their version.
+Protocol bindings come from DistKV's proto definitions; see [distkvproto](pkg/distkvproto).
+
 > [!IMPORTANT]
 > **Terminology Change**: The *Inference Scheduler* has been renamed to **llm-d Router**; see [Terminology](README.md#terminology).
 
