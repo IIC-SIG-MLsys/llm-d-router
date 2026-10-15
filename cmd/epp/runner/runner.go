@@ -83,6 +83,7 @@ import (
 	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requestcontrol/admitter/latencyslo"
 	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requestcontrol/admitter/probabilisticadmitter"
 	reqdataprodprefix "github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requestcontrol/dataproducer/approximateprefix"
+	distkvproducer "github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requestcontrol/dataproducer/distkvlocality"
 	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requestcontrol/dataproducer/inflightload"
 	mmproducer "github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requestcontrol/dataproducer/multimodal"
 	preciseproducer "github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requestcontrol/dataproducer/preciseprefixcache"
@@ -109,6 +110,7 @@ import (
 	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/scheduling/profilehandler/disagg"
 	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/scheduling/profilehandler/single"
 	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/scheduling/scorer/activerequest"
+	cachecostscorer "github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/scheduling/scorer/cachecost"
 	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/scheduling/scorer/contextlengthaware"
 	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/scheduling/scorer/kvcacheutilization"
 	latencyscorer "github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/scheduling/scorer/latency"
@@ -501,6 +503,7 @@ func (r *Runner) registerInTreePlugins() {
 	fwkplugin.Register(attrmodels.ModelsExtractorType, extmodels.ModelServerExtractorFactory)
 
 	fwkplugin.Register(prefix.PrefixCacheScorerPluginType, prefix.PrefixCachePluginFactory)
+	fwkplugin.Register(cachecostscorer.PluginType, cachecostscorer.Factory)
 	fwkplugin.Register(maxscore.MaxScorePickerType, maxscore.MaxScorePickerFactory)
 	fwkplugin.Register(random.RandomPickerType, random.RandomPickerFactory)
 	fwkplugin.Register(weightedrandom.WeightedRandomPickerType, weightedrandom.WeightedRandomPickerFactory)
@@ -522,6 +525,7 @@ func (r *Runner) registerInTreePlugins() {
 	fwkplugin.Register(preciseprefixcache.PrecisePrefixCachePluginType, preciseprefixcache.PluginFactory)
 	fwkplugin.Register(mmcacheaffinity.Type, mmcacheaffinity.Factory)
 	fwkplugin.Register(preciseproducer.PluginType, preciseproducer.PluginFactory)
+	fwkplugin.Register(distkvproducer.PluginType, distkvproducer.PluginFactory)
 
 	// Flow Control plugins
 	fwkplugin.Register(globalstrict.GlobalStrictFairnessPolicyType, globalstrict.GlobalStrictFairnessPolicyFactory)

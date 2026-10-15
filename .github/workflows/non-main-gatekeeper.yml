@@ -16,8 +16,8 @@ jobs:
   add-label:
     runs-on: ubuntu-latest
     steps:
-      - name: Add labels when base branch is not main
-        if: github.event.pull_request.base.ref != 'main'
+      - name: Hold PRs outside maintained branches
+        if: github.event.pull_request.base.ref != 'main' && github.event.pull_request.base.ref != 'distkv-0.9'
         uses: actions-ecosystem/action-add-labels@v1
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}

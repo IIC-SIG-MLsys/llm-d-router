@@ -4,13 +4,16 @@ on:
   push:
     branches:
       - main
+      - distkv-0.9
       - 'release-*'
   pull_request:
     branches:
       - main
+      - distkv-0.9
   pull_request_target:
     branches:
       - main
+      - distkv-0.9
     types: [ opened, synchronize, reopened ]
 
 permissions:

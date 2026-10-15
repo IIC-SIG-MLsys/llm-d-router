@@ -17,12 +17,21 @@ limitations under the License.
 package prefix
 
 import (
+	"slices"
+
 	fwkdl "github.com/llm-d/llm-d-router/pkg/epp/framework/interface/datalayer"
 	"github.com/llm-d/llm-d-router/pkg/epp/framework/interface/plugin"
 	approxprefixconstants "github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requestcontrol/dataproducer/approximateprefix/constants"
 )
 
 var PrefixCacheMatchInfoDataKey = plugin.NewDataKey("PrefixCacheMatchInfoDataKey", approxprefixconstants.ApproxPrefixCachePluginType)
+
+type DeviceTokenRange struct{ Start, End uint32 }
+
+type DeviceCacheGroup struct {
+	GroupIdx uint32
+	Ranges   []DeviceTokenRange
+}
 
 type PrefixCacheMatchInfo struct {
 	// matched prefix length in blocks. For the precise prefix cache this is the
@@ -38,7 +47,10 @@ type PrefixCacheMatchInfo struct {
 	// of device tier, so consumers that convert blocks to a token count (e.g.
 	// the prefix-based PD decider) get an accurate cached-token figure rather
 	// than a tier-attenuated one. Defaults to matchBlocks when not set.
-	cachedBlockCount int
+	cachedBlockCount       int
+	deviceCachedBlockCount int
+	groupedDeviceCache     bool
+	deviceCacheGroups      []DeviceCacheGroup
 }
 
 func NewPrefixCacheMatchInfo(matchBlocks int, totalBlocks int, blockSizeTokens int) *PrefixCacheMatchInfo {
@@ -56,6 +68,21 @@ func (p *PrefixCacheMatchInfo) WithCachedBlockCount(cachedBlockCount int) *Prefi
 	p.cachedBlockCount = cachedBlockCount
 	return p
 }
+
+func (p *PrefixCacheMatchInfo) WithDeviceCachedBlockCount(count int) *PrefixCacheMatchInfo {
+	p.deviceCachedBlockCount = count
+	return p
+}
+
+func (p *PrefixCacheMatchInfo) DeviceCachedBlockCount() int { return p.deviceCachedBlockCount }
+
+func (p *PrefixCacheMatchInfo) WithDeviceCacheGroups(groups []DeviceCacheGroup, grouped bool) *PrefixCacheMatchInfo {
+	p.deviceCacheGroups, p.groupedDeviceCache = groups, grouped
+	return p
+}
+
+func (p *PrefixCacheMatchInfo) DeviceCacheGroups() []DeviceCacheGroup { return p.deviceCacheGroups }
+func (p *PrefixCacheMatchInfo) GroupedDeviceCache() bool              { return p.groupedDeviceCache }
 
 func (p *PrefixCacheMatchInfo) MatchBlocks() int {
 	return p.matchBlocks
@@ -76,10 +103,17 @@ func (p *PrefixCacheMatchInfo) CachedBlockCount() int {
 }
 
 func (p *PrefixCacheMatchInfo) Clone() fwkdl.Cloneable {
+	groups := slices.Clone(p.deviceCacheGroups)
+	for i := range groups {
+		groups[i].Ranges = slices.Clone(groups[i].Ranges)
+	}
 	return &PrefixCacheMatchInfo{
-		matchBlocks:      p.matchBlocks,
-		totalBlocks:      p.totalBlocks,
-		blockSizeTokens:  p.blockSizeTokens,
-		cachedBlockCount: p.cachedBlockCount,
+		matchBlocks:            p.matchBlocks,
+		totalBlocks:            p.totalBlocks,
+		blockSizeTokens:        p.blockSizeTokens,
+		cachedBlockCount:       p.cachedBlockCount,
+		deviceCachedBlockCount: p.deviceCachedBlockCount,
+		groupedDeviceCache:     p.groupedDeviceCache,
+		deviceCacheGroups:      groups,
 	}
 }

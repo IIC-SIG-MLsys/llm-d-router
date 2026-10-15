@@ -20,6 +20,7 @@ import (
 	"testing"
 
 	"github.com/llm-d/llm-d-kv-cache/pkg/kvcache/kvblock"
+	attrprefix "github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/datalayer/attribute/prefix"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -93,4 +94,44 @@ func TestMatchedBlockCount(t *testing.T) {
 			assert.Equal(t, tt.want, matchedBlockCount(keys, tt.keyToPods, tt.podID))
 		})
 	}
+}
+
+func TestDeviceMatchedBlockCountExcludesHostAndSpeculativeEntries(t *testing.T) {
+	keys := []kvblock.BlockHash{1, 2, 3}
+	for _, tier := range []string{"cpu_pinned", "disk", "unknown"} {
+		entries := map[kvblock.BlockHash][]kvblock.PodEntry{
+			1: {{PodIdentifier: "pod", DeviceTier: "gpu"}},
+			2: {{PodIdentifier: "pod", DeviceTier: tier}},
+			3: {{PodIdentifier: "pod", DeviceTier: "gpu"}},
+		}
+		if got := deviceMatchedBlockCount(keys, entries, "pod"); got != 1 {
+			t.Fatalf("tier %s device count=%d, want 1", tier, got)
+		}
+	}
+	entries := map[kvblock.BlockHash][]kvblock.PodEntry{1: {{PodIdentifier: "pod", DeviceTier: "gpu", Speculative: true}}}
+	if got := deviceMatchedBlockCount(keys, entries, "pod"); got != 0 {
+		t.Fatalf("speculative device count=%d", got)
+	}
+}
+
+func TestGroupedDeviceEvidenceRequiresRegisteredSemantics(t *testing.T) {
+	keys := []kvblock.BlockHash{1, 2}
+	entries := map[kvblock.BlockHash][]kvblock.PodEntry{
+		1: {{PodIdentifier: "pod", DeviceTier: "gpu", HasGroup: true, GroupIdx: 0}, {PodIdentifier: "pod", DeviceTier: "gpu", HasGroup: true, GroupIdx: 1}},
+		2: {{PodIdentifier: "pod", DeviceTier: "gpu", HasGroup: true, GroupIdx: 0}, {PodIdentifier: "pod", DeviceTier: "gpu", HasGroup: true, GroupIdx: 1, Speculative: true}, {PodIdentifier: "other", DeviceTier: "gpu", HasGroup: true, GroupIdx: 1}},
+	}
+	assert.Zero(t, deviceMatchedBlockCount(keys, entries, "pod"))
+	groups, grouped := deviceCacheGroups(keys, entries, "pod", 2)
+	assert.True(t, grouped)
+	assert.Equal(t, []attrprefix.DeviceCacheGroup{
+		{GroupIdx: 0, Ranges: []attrprefix.DeviceTokenRange{{Start: 0, End: 4}}},
+		{GroupIdx: 1, Ranges: []attrprefix.DeviceTokenRange{{Start: 0, End: 2}}},
+	}, groups)
+	info := attrprefix.NewPrefixCacheMatchInfo(0, 2, 2).WithDeviceCacheGroups(groups, true)
+	clone := info.Clone().(*attrprefix.PrefixCacheMatchInfo)
+	clone.DeviceCacheGroups()[0].Ranges[0].End = 2
+	assert.EqualValues(t, 4, info.DeviceCacheGroups()[0].Ranges[0].End)
+	next, grouped := deviceCacheGroups([]kvblock.BlockHash{3, 4}, entries, "pod", 2)
+	assert.False(t, grouped)
+	assert.Empty(t, next)
 }

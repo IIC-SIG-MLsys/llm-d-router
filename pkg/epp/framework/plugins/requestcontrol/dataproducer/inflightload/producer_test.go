@@ -85,8 +85,8 @@ func TestInFlightLoadProducer_PrefixMatchInfoProducerName(t *testing.T) {
 
 	preciseKey := attrprefix.PrefixCacheMatchInfoDataKey.WithNonEmptyProducerName(preciseName)
 
-	// The optional dependency points at the configured precise producer, not approx.
-	require.Contains(t, producer.Consumes().Optional, preciseKey)
+	require.Contains(t, producer.Consumes().Required, preciseKey)
+	require.NotContains(t, producer.Consumes().Optional, preciseKey)
 	require.NotContains(t, producer.Consumes().Optional, attrprefix.PrefixCacheMatchInfoDataKey)
 
 	// The discount reads PrefixCacheMatchInfo from the configured producer's key

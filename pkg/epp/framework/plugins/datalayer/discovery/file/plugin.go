@@ -44,6 +44,7 @@ const PluginType = "file-discovery"
 type EndpointEntry struct {
 	Name      string            `json:"name"                yaml:"name"`
 	Namespace string            `json:"namespace,omitempty" yaml:"namespace,omitempty"`
+	NodeName  string            `json:"nodeName,omitempty"  yaml:"nodeName,omitempty"`
 	Address   string            `json:"address"             yaml:"address"`
 	Port      string            `json:"port"                yaml:"port"`
 	Labels    map[string]string `json:"labels,omitempty"    yaml:"labels,omitempty"`
@@ -213,6 +214,7 @@ func (f *FileDiscovery) load(notifier fwkdl.DiscoveryNotifier) error {
 		meta := &fwkdl.EndpointMetadata{
 			NamespacedName: types.NamespacedName{Name: e.Name, Namespace: ns},
 			PodName:        e.Name,
+			NodeName:       e.NodeName,
 			Address:        e.Address,
 			Port:           e.Port,
 			MetricsHost:    net.JoinHostPort(e.Address, e.Port),
