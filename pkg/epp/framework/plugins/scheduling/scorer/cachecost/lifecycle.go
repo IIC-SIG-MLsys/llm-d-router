@@ -152,6 +152,14 @@ func (p *Plugin) PreRequest(_ context.Context, request *fwksched.InferenceReques
 		match, _ := value.(*attrcache.MatchInfo)
 		seconds := p.estimateSeconds(request, match)
 		if math.IsInf(seconds, 0) || math.IsNaN(seconds) {
+			// A zero cost score cannot prevent dispatch. Unknown restore costs
+			// still reserve a full prefill estimate until the request responds.
+			seconds = p.estimateSeconds(request, nil)
+			if seconds == 0 && match != nil {
+				seconds = float64(match.TotalTokens) / p.config.PrefillTokensPerSecond
+			}
+		}
+		if math.IsInf(seconds, 0) || math.IsNaN(seconds) {
 			continue
 		}
 		load := p.loads[id]

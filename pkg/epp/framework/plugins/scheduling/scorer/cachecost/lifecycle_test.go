@@ -58,6 +58,33 @@ func TestPendingSSDRestoreChangesNextDecision(t *testing.T) {
 	require.Greater(t, scores[busy], scores[idle])
 }
 
+func TestUncalibratedRemoteDispatchStillReservesLoad(t *testing.T) {
+	for _, withPrompt := range []bool{false, true} {
+		t.Run(fmt.Sprintf("prompt=%t", withPrompt), func(t *testing.T) {
+			p := calibratedPlugin(t)
+			remote := &attrcache.MatchInfo{TotalTokens: 1000, ExternalTokens: 800,
+				BytesByMedium: map[string]uint64{"memory": 800000}, RemoteBytesByTransport: map[string]uint64{"hux": 800000}, RemoteSources: 1}
+			busy := candidate(p, remote, 0)
+			idle := candidate(p, &attrcache.MatchInfo{TotalTokens: 1000}, 0)
+			request := costRequest("uncalibrated", busy, 1000)
+			if !withPrompt {
+				request.Body = nil
+			}
+			require.Zero(t, p.Score(context.Background(), request, []fwksched.Endpoint{busy})[busy])
+			p.PreRequest(context.Background(), request, request.SchedulingResult)
+			p.PreRequest(context.Background(), request, request.SchedulingResult)
+			// Without a calibrated restore cost, reserve a full prefill estimate.
+			require.Equal(t, 1.0, p.queuedSeconds(busy))
+			busy.Put(p.matchKey.String(), &attrcache.MatchInfo{TotalTokens: 1000})
+			scores := p.Score(context.Background(), nil, []fwksched.Endpoint{busy, idle})
+			require.Greater(t, scores[idle], scores[busy])
+			p.ResponseBody(context.Background(), request, &requestcontrol.Response{StartOfStream: true}, nil)
+			p.ResponseBody(context.Background(), request, &requestcontrol.Response{EndOfStream: true}, nil)
+			require.Zero(t, p.queuedSeconds(busy))
+		})
+	}
+}
+
 func TestFirstTokenEndAndEvictionReleaseOnlyTheirReservation(t *testing.T) {
 	for _, first := range []string{"first-token", "end", "ttl-or-cancel"} {
 		t.Run(first, func(t *testing.T) {
