@@ -27,10 +27,14 @@ import (
 type EndpointMetadata struct {
 	NamespacedName types.NamespacedName
 	PodName        string
-	Address        string
-	Port           string
-	MetricsHost    string
-	Labels         map[string]string
+	// NodeName is the Kubernetes node the pod runs on (pod.Spec.NodeName).
+	// Empty for non-Kubernetes discovery sources (e.g. file discovery)
+	// unless the source provides it.
+	NodeName    string
+	Address     string
+	Port        string
+	MetricsHost string
+	Labels      map[string]string
 	// RankIndex is this endpoint's position in the pool's TargetPorts,
 	// identifying the pod-local rank in multi-port deployments.
 	RankIndex int
@@ -58,6 +62,7 @@ func (epm *EndpointMetadata) Clone() *EndpointMetadata {
 			Namespace: epm.NamespacedName.Namespace,
 		},
 		PodName:     epm.PodName,
+		NodeName:    epm.NodeName,
 		Address:     epm.Address,
 		Port:        epm.Port,
 		MetricsHost: epm.MetricsHost,
@@ -74,6 +79,7 @@ func (epm *EndpointMetadata) Equal(other *EndpointMetadata) bool {
 	}
 	return epm.NamespacedName == other.NamespacedName &&
 		epm.PodName == other.PodName &&
+		epm.NodeName == other.NodeName &&
 		epm.Address == other.Address &&
 		epm.Port == other.Port &&
 		epm.MetricsHost == other.MetricsHost &&

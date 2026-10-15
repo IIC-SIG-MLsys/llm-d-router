@@ -18,7 +18,12 @@ package requestcontrol
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -27,7 +32,9 @@ import (
 
 	fwkplugin "github.com/llm-d/llm-d-router/pkg/epp/framework/interface/plugin"
 	fwkrc "github.com/llm-d/llm-d-router/pkg/epp/framework/interface/requestcontrol"
+	fwkrh "github.com/llm-d/llm-d-router/pkg/epp/framework/interface/requesthandling"
 	fwksched "github.com/llm-d/llm-d-router/pkg/epp/framework/interface/scheduling"
+	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requestcontrol/dataproducer/tokenizer"
 )
 
 var (
@@ -35,6 +42,29 @@ var (
 	testKeyB    = fwkplugin.NewDataKey("keyB", "producerB")
 	testKeyFail = fwkplugin.NewDataKey("keyFail", "producerFail")
 )
+
+func TestSGLangTokenizerDeadlineFallsBackBeforeProducerBudget(t *testing.T) {
+	canceled := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, request *http.Request) {
+		_, _ = io.Copy(io.Discard, request.Body)
+		<-request.Context().Done()
+		close(canceled)
+	}))
+	defer server.Close()
+	ctx := context.Background()
+	params := `{"modelName":"model","sglang":{"url":"` + server.URL + `","timeout":"20ms"}}`
+	p, err := tokenizer.PluginFactory("token-producer", json.NewDecoder(strings.NewReader(params)), fwkplugin.NewEppHandle(ctx, nil))
+	assert.NoError(t, err)
+	request := &fwksched.InferenceRequest{Body: &fwkrh.InferenceRequestBody{Completions: &fwkrh.CompletionsRequest{Prompt: fwkrh.Prompt{Strings: []string{"hello"}}}}}
+	err = dataProducerPluginsWithTimeout(ctx, producerTimeout(p.(fwkrc.DataProducer)), []fwkrc.DataProducer{p.(fwkrc.DataProducer)}, request, nil)
+	assert.NoError(t, err)
+	assert.Nil(t, request.Body.TokenizedPrompt)
+	select {
+	case <-canceled:
+	case <-time.After(time.Second):
+		t.Fatal("timed out tokenizer HTTP request was not canceled")
+	}
+}
 
 var _ fwkrc.DataProducer = &executorMockDataProducerPlugin{}
 

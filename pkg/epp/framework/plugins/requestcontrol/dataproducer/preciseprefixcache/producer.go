@@ -141,6 +141,10 @@ func PluginFactory(name string, rawParameters *json.Decoder, handle plugin.Handl
 // The kvcache indexer, KV-events pool, and any local ZMQ subscriber start
 // in background goroutines bound to ctx.
 func New(ctx context.Context, name string, config PluginConfig) (*Producer, error) {
+	adapter, err := prefixEngineAdapter(config.KVEventsConfig)
+	if err != nil {
+		return nil, err
+	}
 	if config.TokenProcessorConfig == nil {
 		config.TokenProcessorConfig = kvblock.DefaultTokenProcessorConfig()
 	}
@@ -165,7 +169,7 @@ func New(ctx context.Context, name string, config PluginConfig) (*Producer, erro
 		return nil, fmt.Errorf("failed to create KVBlockScorer: %w", err)
 	}
 
-	pool := kvevents.NewPool(config.KVEventsConfig, indexer.KVBlockIndex(), tokenProcessor, engineadapter.NewVLLMAdapter())
+	pool := kvevents.NewPool(config.KVEventsConfig, indexer.KVBlockIndex(), tokenProcessor, adapter)
 	pool.Start(ctx)
 
 	subscribersManager := kvevents.NewSubscriberManager(pool)
@@ -297,11 +301,17 @@ func (p *Producer) produceFromBlockKeys(ctx context.Context, span trace.Span,
 			maxMatch = matchLen
 		}
 		cachedBlocks := 0
+		deviceBlocks := 0
 		for _, lu := range lookups {
 			cachedBlocks += matchedBlockCount(lu.keys, lu.keyToPods, addr)
+			deviceBlocks += deviceMatchedBlockCount(lu.keys, lu.keyToPods, addr)
 		}
-		ep.Put(p.dk.String(),
-			attrprefix.NewPrefixCacheMatchInfo(matchLen, totalBlocks, p.blockSizeTokens).WithCachedBlockCount(cachedBlocks))
+		info := attrprefix.NewPrefixCacheMatchInfo(matchLen, totalBlocks, p.blockSizeTokens).WithCachedBlockCount(cachedBlocks).WithDeviceCachedBlockCount(deviceBlocks)
+		if len(lookups) == 1 {
+			groups, grouped := deviceCacheGroups(lookups[0].keys, lookups[0].keyToPods, addr, p.blockSizeTokens)
+			info.WithDeviceCacheGroups(groups, grouped)
+		}
+		ep.Put(p.dk.String(), info)
 	}
 
 	if p.speculativeEnabled {
@@ -317,4 +327,14 @@ func (p *Producer) produceFromBlockKeys(ctx context.Context, span trace.Span,
 	logger.V(logging.TRACE).Info("Produce completed",
 		"blockKeys", totalBlocks, "scores", aggregatedScores)
 	return nil
+}
+
+func prefixEngineAdapter(config *kvevents.Config) (kvevents.EngineAdapter, error) {
+	if config == nil || config.EngineType == "" || config.EngineType == "vllm" {
+		return engineadapter.NewVLLMAdapter(), nil
+	}
+	if config.EngineType == "sglang" {
+		return engineadapter.NewSGLangAdapter(), nil
+	}
+	return nil, fmt.Errorf("unsupported KV events engineType %q", config.EngineType)
 }

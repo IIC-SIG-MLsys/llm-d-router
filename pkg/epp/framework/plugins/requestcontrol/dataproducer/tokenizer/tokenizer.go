@@ -32,6 +32,7 @@ import (
 	tokenizerTypes "github.com/llm-d/llm-d-kv-cache/pkg/tokenization/types"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
+	logutil "github.com/llm-d/llm-d-router/pkg/common/observability/logging"
 	"github.com/llm-d/llm-d-router/pkg/epp/framework/interface/plugin"
 	"github.com/llm-d/llm-d-router/pkg/epp/framework/interface/requestcontrol"
 	fwkrh "github.com/llm-d/llm-d-router/pkg/epp/framework/interface/requesthandling"
@@ -71,7 +72,8 @@ type tokenizerPluginConfig struct {
 	// in a future release. Migrate to the `vllm` HTTP /render backend.
 	TokenizerConfig tokenization.UdsTokenizerConfig `json:"udsTokenizerConfig,omitempty"`
 	// VLLM configures the vLLM /render backend.
-	VLLM *vllmConfig `json:"vllm,omitempty"`
+	VLLM   *vllmConfig   `json:"vllm,omitempty"`
+	SGLang *sglangConfig `json:"sglang,omitempty"`
 	// Estimate selects the tokenizer-free byte-packing backend; mutually
 	// exclusive with 'vllm'/'udsTokenizerConfig' and needs no 'modelName'.
 	Estimate *estimateConfig `json:"estimate,omitempty"`
@@ -130,13 +132,14 @@ func PluginFactory(name string, rawParameters *json.Decoder, handle plugin.Handl
 
 	estimate := config.Estimate != nil
 	uds := config.TokenizerConfig.IsEnabled()
-	vllm := config.VLLM != nil || config.ModelName != ""
-	if (estimate && (uds || vllm)) || (uds && vllm) {
-		return nil, fmt.Errorf("invalid configuration for '%s' plugin: only one of 'estimate', 'vllm', or 'udsTokenizerConfig' may be set", PluginType)
+	sglang := config.SGLang != nil
+	vllm := config.VLLM != nil || (config.ModelName != "" && !sglang)
+	if (estimate && (uds || vllm || sglang)) || (uds && (vllm || sglang)) || (vllm && sglang) {
+		return nil, fmt.Errorf("invalid configuration for '%s' plugin: only one of 'estimate', 'vllm', 'sglang', or 'udsTokenizerConfig' may be set", PluginType)
 	}
 	// modelName is required only by the real-tokenizer backends; the zero-config
 	// path selects the estimate backend, which needs none.
-	if (uds || vllm) && config.ModelName == "" {
+	if (uds || vllm || sglang) && config.ModelName == "" {
 		return nil, fmt.Errorf("invalid configuration for '%s' plugin: 'modelName' must be specified", PluginType)
 	}
 	if config.Estimate != nil && config.Estimate.Image != nil {
@@ -182,6 +185,12 @@ func NewPlugin(ctx context.Context, name string, config *tokenizerPluginConfig) 
 			return nil, fmt.Errorf("failed to initialize UDS tokenizer for '%s' plugin - %w", PluginType, err)
 		}
 		backend = renderBackend{tk: uds}
+	case config.SGLang != nil:
+		renderer, err := newSGLangHTTPTokenizer(config.SGLang, config.ModelName)
+		if err != nil {
+			return nil, err
+		}
+		backend = renderer
 	case config.VLLM != nil || config.ModelName != "":
 		cfg := config.VLLM
 		if cfg == nil {
@@ -259,6 +268,10 @@ func (p *Plugin) Produce(ctx context.Context, request *scheduling.InferenceReque
 
 	tp, err := p.backend.produce(ctx, request.Body)
 	if err != nil {
+		if _, ok := p.backend.(*sglangHTTPTokenizer); ok {
+			log.FromContext(ctx).V(logutil.DEBUG).Info("SGLang tokenization unavailable; routing with load metrics", "err", err.Error())
+			return nil
+		}
 		return err
 	}
 	if tp == nil || tp.TokenCount() == 0 {

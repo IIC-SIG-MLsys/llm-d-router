@@ -108,6 +108,8 @@ type InferenceRequestBody struct {
 // It is consumed by scheduling and request-control plugins that benefit from
 // actual token data such as prefix-cache awareness.
 type TokenizedPrompt struct {
+	// Estimated marks synthetic token IDs that cannot identify engine cache entries.
+	Estimated bool
 	// PerPromptTokens holds the token IDs for each prompt in the request.
 	// Single-prompt requests (chat, generate, single-string completions) use a
 	// length-1 outer slice. Multi-string completions use one inner slice per

@@ -18,12 +18,14 @@ package preciseprefixcache
 
 import (
 	"fmt"
+	"math"
 	"slices"
 
 	"github.com/llm-d/llm-d-kv-cache/pkg/kvcache/kvblock"
 	"k8s.io/apimachinery/pkg/util/sets"
 
 	"github.com/llm-d/llm-d-router/pkg/epp/framework/interface/scheduling"
+	attrprefix "github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/datalayer/attribute/prefix"
 )
 
 // extractEndpointSet builds the "address:port" identifier set used to filter
@@ -53,4 +55,63 @@ func matchedBlockCount(keys []kvblock.BlockHash, keyToPods map[kvblock.BlockHash
 		count++
 	}
 	return count
+}
+
+func deviceMatchedBlockCount(keys []kvblock.BlockHash, keyToPods map[kvblock.BlockHash][]kvblock.PodEntry, podID string) int {
+	for _, key := range keys {
+		if slices.ContainsFunc(keyToPods[key], func(e kvblock.PodEntry) bool { return e.PodIdentifier == podID && e.HasGroup }) {
+			return 0
+		}
+	}
+	count := 0
+	for _, key := range keys {
+		if !slices.ContainsFunc(keyToPods[key], func(e kvblock.PodEntry) bool {
+			return e.PodIdentifier == podID && e.DeviceTier == "gpu" && !e.Speculative
+		}) {
+			break
+		}
+		count++
+	}
+	return count
+}
+
+// Group observations are evidence, not a declaration of the required group set.
+func deviceCacheGroups(keys []kvblock.BlockHash, keyToPods map[kvblock.BlockHash][]kvblock.PodEntry, podID string, blockSize int) ([]attrprefix.DeviceCacheGroup, bool) {
+	groups := make(map[uint32][]attrprefix.DeviceTokenRange)
+	grouped := false
+	seen := make(map[uint32]bool)
+	for i, key := range keys {
+		clear(seen)
+		for _, entry := range keyToPods[key] {
+			if entry.PodIdentifier != podID || !entry.HasGroup {
+				continue
+			}
+			grouped = true
+			if entry.GroupIdx < 0 || entry.GroupIdx > math.MaxInt32 {
+				continue
+			}
+			g := uint32(entry.GroupIdx)
+			if _, exists := groups[g]; !exists {
+				groups[g] = nil
+			}
+			if entry.DeviceTier != "gpu" || entry.Speculative || seen[g] {
+				continue
+			}
+			seen[g] = true
+			start, end := uint32(i*blockSize), uint32((i+1)*blockSize)
+			ranges := groups[g]
+			if len(ranges) > 0 && ranges[len(ranges)-1].End == start {
+				ranges[len(ranges)-1].End = end
+			} else {
+				ranges = append(ranges, attrprefix.DeviceTokenRange{Start: start, End: end})
+			}
+			groups[g] = ranges
+		}
+	}
+	result := make([]attrprefix.DeviceCacheGroup, 0, len(groups))
+	for g, ranges := range groups {
+		result = append(result, attrprefix.DeviceCacheGroup{GroupIdx: g, Ranges: ranges})
+	}
+	slices.SortFunc(result, func(a, b attrprefix.DeviceCacheGroup) int { return int(a.GroupIdx) - int(b.GroupIdx) })
+	return result, grouped
 }
