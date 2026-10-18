@@ -19,7 +19,10 @@ package preciseprefixcache
 import (
 	"context"
 	"reflect"
+	"strconv"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/go-logr/logr"
 	"github.com/llm-d/llm-d-kv-cache/pkg/kvevents"
@@ -45,11 +48,17 @@ func newExtractorProducer(discoverPods bool) *Producer {
 	cfg.PodDiscoveryConfig = kvevents.DefaultPodReconcilerConfig()
 	cfg.PodDiscoveryConfig.SocketPort = 5557
 
+	index := &fakeKVBlockIndex{}
+	adapter, _ := prefixEngineAdapter(cfg)
+	source := newSourceEvents(context.Background(), index, adapter, cfg.TopicFilter)
+	pool := kvevents.NewPool(cfg, index, nil, source)
+	source.pool = pool
+	pool.Start(log.IntoContext(context.Background(), logr.Discard()))
 	return &Producer{
 		typedName:          plugin.TypedName{Type: PluginType, Name: PluginType},
-		subscribersManager: kvevents.NewSubscriberManager(kvevents.NewPool(cfg, nil, nil, nil)),
+		subscribersManager: source,
+		sources:            source,
 		kvEventsConfig:     cfg,
-		subscriberCtx:      context.Background(),
 	}
 }
 
@@ -177,7 +186,7 @@ func TestProducer_ExtractEndpoint_OffsetsZMQPortByRankIndex(t *testing.T) {
 			Endpoint: fwkdl.NewEndpoint(&fwkdl.EndpointMetadata{
 				NamespacedName: k8stypes.NamespacedName{Namespace: "ns", Name: ep.name},
 				Address:        ep.address,
-				Port:           "8080",
+				Port:           strconv.Itoa(8080 + ep.rank),
 				RankIndex:      ep.rank,
 			}, nil),
 		}))
@@ -241,4 +250,23 @@ func TestProducer_ExtractEndpoint_DeleteWithMissingAddressRemovesExistingSubscri
 
 	ids, _ = p.subscribersManager.GetActiveSubscribers()
 	assert.Empty(t, ids)
+}
+
+func TestProducer_EndpointDeleteInvalidatesItsIndex(t *testing.T) {
+	ctx := discardCtx(t)
+	p := newExtractorProducer(true)
+	defer p.subscribersManager.Shutdown(ctx)
+	var cleared atomic.Int32
+	p.sources.index.(*fakeKVBlockIndex).clearFn = func(_ context.Context, pod string) error {
+		if pod == "10.0.0.1:8080" {
+			cleared.Add(1)
+		}
+		return nil
+	}
+	ep := newEndpoint("pod-a", "10.0.0.1")
+	require.NoError(t, p.Extract(ctx, fwkdl.EndpointEvent{Type: fwkdl.EventAddOrUpdate, Endpoint: ep}))
+	require.Eventually(t, func() bool { return p.sources.snapshot(ep.GetMetadata()).source != nil }, time.Second, time.Millisecond)
+	cleared.Store(0)
+	require.NoError(t, p.Extract(ctx, fwkdl.EndpointEvent{Type: fwkdl.EventDelete, Endpoint: ep}))
+	require.Eventually(t, func() bool { return cleared.Load() > 0 }, time.Second, time.Millisecond)
 }

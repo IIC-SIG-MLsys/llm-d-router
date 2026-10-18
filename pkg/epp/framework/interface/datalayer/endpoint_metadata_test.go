@@ -70,6 +70,8 @@ func TestEndpointMetadataEqual(t *testing.T) {
 	base := &EndpointMetadata{
 		NamespacedName: types.NamespacedName{Name: "pod-a-rank-0", Namespace: "default"},
 		PodName:        "pod-a",
+		PodUID:         "uid-a",
+		PodRuntimeID:   "runtime-a",
 		Address:        "10.0.0.1",
 		Port:           "8000",
 		MetricsHost:    "10.0.0.1:9000",
@@ -92,6 +94,11 @@ func TestEndpointMetadataEqual(t *testing.T) {
 		name   string
 		mutate func(*EndpointMetadata)
 	}{
+		{
+			name:   "pod UID",
+			mutate: func(meta *EndpointMetadata) { meta.PodUID = "uid-b" },
+		},
+		{name: "pod runtime", mutate: func(meta *EndpointMetadata) { meta.PodRuntimeID = "runtime-b" }},
 		{
 			name: "namespaced name",
 			mutate: func(meta *EndpointMetadata) {
