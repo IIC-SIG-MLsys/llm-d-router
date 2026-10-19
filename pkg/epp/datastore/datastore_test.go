@@ -29,6 +29,7 @@ import (
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -1462,4 +1463,50 @@ func TestDiscoveryNotifier_WorksAlongsideDirectUpsert(t *testing.T) {
 	eps := ds.PodList(AllPodsPredicate)
 	assert.Len(t, eps, 1)
 	assert.Equal(t, "10.0.0.1", eps[0].GetMetadata().Address)
+}
+
+func TestEndpointUpsert_PodReplacementNotifiesWithUnchangedAddress(t *testing.T) {
+	ctx := context.Background()
+	factory := &mockEndpointFactory{}
+	ds := NewDatastore(ctx, factory, 0)
+	meta := &fwkdl.EndpointMetadata{NamespacedName: types.NamespacedName{Name: "pod", Namespace: "ns"}, Address: "10.0.0.1", Port: "8000", PodUID: "old"}
+	ds.EndpointUpsert(ctx, meta)
+	replacement := meta.Clone()
+	replacement.PodUID = "new"
+	ds.EndpointUpsert(ctx, replacement)
+	updates := factory.updateEvents()
+	require.Len(t, updates, 1)
+	assert.Equal(t, types.UID("new"), updates[0].GetMetadata().PodUID)
+}
+
+func TestPodRuntimeIdentity(t *testing.T) {
+	pod := pod1.DeepCopy()
+	pod.Status.ContainerStatuses = []corev1.ContainerStatus{{Name: "model", ContainerID: "containerd://a", RestartCount: 2}, {Name: "sidecar", ContainerID: "containerd://s", RestartCount: 1}}
+	identity := podRuntimeID(pod)
+	require.NotEmpty(t, identity)
+	reordered := pod.DeepCopy()
+	reordered.Status.ContainerStatuses[0], reordered.Status.ContainerStatuses[1] = reordered.Status.ContainerStatuses[1], reordered.Status.ContainerStatuses[0]
+	reordered.Status.ContainerStatuses[0].Ready = true
+	assert.Equal(t, identity, podRuntimeID(reordered))
+	for _, change := range []func(*corev1.Pod){func(p *corev1.Pod) { p.Status.ContainerStatuses[0].RestartCount++ }, func(p *corev1.Pod) { p.Status.ContainerStatuses[0].ContainerID = "containerd://b" }, func(p *corev1.Pod) { p.Status.ContainerStatuses[1].RestartCount++ }} {
+		changed := pod.DeepCopy()
+		change(changed)
+		assert.NotEqual(t, identity, podRuntimeID(changed))
+	}
+	ctx := context.Background()
+	factory := &mockEndpointFactory{}
+	ds := NewDatastore(ctx, factory, 0)
+	require.NoError(t, ds.PoolSet(ctx, fake.NewFakeClient(), poolutil.InferencePoolToEndpointPool(inferencePool)))
+	pod.UID = "uid"
+	ds.PodUpdateOrAddIfNotExist(ctx, pod)
+	eps := ds.PodList(AllPodsPredicate)
+	require.NotEmpty(t, eps)
+	assert.Equal(t, identity, eps[0].GetMetadata().PodRuntimeID)
+	assert.Equal(t, pod.UID, eps[0].GetMetadata().PodUID)
+	restarted := pod.DeepCopy()
+	restarted.Status.ContainerStatuses[0].RestartCount++
+	ds.PodUpdateOrAddIfNotExist(ctx, restarted)
+	updates := factory.updateEvents()
+	require.NotEmpty(t, updates)
+	assert.NotEqual(t, identity, updates[0].GetMetadata().PodRuntimeID)
 }

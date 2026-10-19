@@ -52,8 +52,9 @@ func (f *fakeKVCacheIndexer) ComputeBlockKeysFromTokens(ctx context.Context, tok
 func (f *fakeKVCacheIndexer) KVBlockIndex() kvblock.Index { return f.index }
 
 type fakeKVBlockIndex struct {
-	lookup func(ctx context.Context, keys []kvblock.BlockHash, podSet sets.Set[string]) (map[kvblock.BlockHash][]kvblock.PodEntry, error)
-	addFn  func(ctx context.Context, prevKeys, keys []kvblock.BlockHash, entries []kvblock.PodEntry) error
+	clearFn func(context.Context, string) error
+	lookup  func(ctx context.Context, keys []kvblock.BlockHash, podSet sets.Set[string]) (map[kvblock.BlockHash][]kvblock.PodEntry, error)
+	addFn   func(ctx context.Context, prevKeys, keys []kvblock.BlockHash, entries []kvblock.PodEntry) error
 }
 
 func (f *fakeKVBlockIndex) Lookup(ctx context.Context, keys []kvblock.BlockHash, podSet sets.Set[string]) (map[kvblock.BlockHash][]kvblock.PodEntry, error) {
@@ -78,7 +79,10 @@ func (f *fakeKVBlockIndex) GetRequestKey(_ context.Context, _ kvblock.BlockHash)
 	return kvblock.EmptyBlockHash, nil
 }
 
-func (f *fakeKVBlockIndex) Clear(_ context.Context, _ string) error {
+func (f *fakeKVBlockIndex) Clear(ctx context.Context, pod string) error {
+	if f.clearFn != nil {
+		return f.clearFn(ctx, pod)
+	}
 	return nil
 }
 
@@ -568,6 +572,7 @@ func TestNew_BlockSizeFlowsViaTokenProcessor(t *testing.T) {
 			name := "t-" + tc.name
 			p, err := New(ctx, name, cfg)
 			require.NoError(t, err)
+			t.Cleanup(func() { cancel(); p.subscribersManager.Shutdown(ctx) })
 
 			tokens := make([]uint32, 64)
 			for i := range tokens {

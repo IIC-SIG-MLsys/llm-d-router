@@ -19,6 +19,7 @@ package preciseprefixcache
 import (
 	"context"
 	"fmt"
+	"maps"
 	"time"
 
 	"github.com/jellydator/ttlcache/v3"
@@ -52,6 +53,7 @@ type speculativeEntries struct {
 // requests use a length-1 outer slice.
 type blockKeysState struct {
 	perPromptKeys [][]kvblock.BlockHash
+	sources       map[string]sourceVersion
 }
 
 // Clone implements plugin.StateData.
@@ -61,7 +63,7 @@ func (s *blockKeysState) Clone() plugin.StateData {
 		cp[i] = make([]kvblock.BlockHash, len(keys))
 		copy(cp[i], keys)
 	}
-	return &blockKeysState{perPromptKeys: cp}
+	return &blockKeysState{perPromptKeys: cp, sources: maps.Clone(s.sources)}
 }
 
 // buildSpeculativeCache constructs the TTL cache used to evict speculative
@@ -159,6 +161,14 @@ func (p *Producer) PreRequest(ctx context.Context,
 		Speculative:   true,
 	}
 
+	if p.sources != nil {
+		// Serialize speculative writes with retirement's queue barrier.
+		p.sources.mu.Lock()
+		defer p.sources.mu.Unlock()
+		if !p.sources.currentLocked(state.sources[targetMeta.NamespacedName.String()]) {
+			return
+		}
+	}
 	index := p.kvCacheIndexer.KVBlockIndex()
 	// Insert per-prompt keys separately to preserve correct block adjacency.
 	for _, promptKeys := range state.perPromptKeys {
@@ -172,7 +182,7 @@ func (p *Producer) PreRequest(ctx context.Context,
 
 	// P/D disagg: seed the prefill endpoint too.
 	if pr, exists := schedulingResult.ProfileResults[experimentalPrefillProfile]; exists && len(pr.TargetEndpoints) > 0 {
-		if prefillMeta := pr.TargetEndpoints[0].GetMetadata(); prefillMeta != nil {
+		if prefillMeta := pr.TargetEndpoints[0].GetMetadata(); prefillMeta != nil && (p.sources == nil || p.sources.currentLocked(state.sources[prefillMeta.NamespacedName.String()])) {
 			prefillPod := kvblock.PodEntry{
 				PodIdentifier: fmt.Sprintf("%s:%s", prefillMeta.Address, prefillMeta.Port),
 				Speculative:   true,

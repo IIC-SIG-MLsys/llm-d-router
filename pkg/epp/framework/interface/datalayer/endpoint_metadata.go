@@ -27,6 +27,8 @@ import (
 type EndpointMetadata struct {
 	NamespacedName types.NamespacedName
 	PodName        string
+	PodUID         types.UID
+	PodRuntimeID   string
 	// NodeName is the Kubernetes node the pod runs on (pod.Spec.NodeName).
 	// Empty for non-Kubernetes discovery sources (e.g. file discovery)
 	// unless the source provides it.
@@ -61,13 +63,15 @@ func (epm *EndpointMetadata) Clone() *EndpointMetadata {
 			Name:      epm.NamespacedName.Name,
 			Namespace: epm.NamespacedName.Namespace,
 		},
-		PodName:     epm.PodName,
-		NodeName:    epm.NodeName,
-		Address:     epm.Address,
-		Port:        epm.Port,
-		MetricsHost: epm.MetricsHost,
-		Labels:      clonedLabels,
-		RankIndex:   epm.RankIndex,
+		PodName:      epm.PodName,
+		PodUID:       epm.PodUID,
+		PodRuntimeID: epm.PodRuntimeID,
+		NodeName:     epm.NodeName,
+		Address:      epm.Address,
+		Port:         epm.Port,
+		MetricsHost:  epm.MetricsHost,
+		Labels:       clonedLabels,
+		RankIndex:    epm.RankIndex,
 	}
 }
 
@@ -79,6 +83,8 @@ func (epm *EndpointMetadata) Equal(other *EndpointMetadata) bool {
 	}
 	return epm.NamespacedName == other.NamespacedName &&
 		epm.PodName == other.PodName &&
+		epm.PodUID == other.PodUID &&
+		epm.PodRuntimeID == other.PodRuntimeID &&
 		epm.NodeName == other.NodeName &&
 		epm.Address == other.Address &&
 		epm.Port == other.Port &&

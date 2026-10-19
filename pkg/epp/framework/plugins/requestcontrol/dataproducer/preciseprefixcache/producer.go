@@ -78,7 +78,8 @@ type Producer struct {
 	typedName      plugin.TypedName
 	kvCacheIndexer kvCacheIndexer
 
-	subscribersManager *kvevents.SubscriberManager
+	subscribersManager subscriberManager
+	sources            *sourceEvents
 	kvEventsConfig     *kvevents.Config
 
 	kvBlockScorer kvcache.KVBlockScorer
@@ -92,10 +93,6 @@ type Producer struct {
 	speculativeEnabled bool
 
 	blockSizeTokens int
-
-	// Plugin-lifetime, not request-scoped: SubscriberManager binds each
-	// subscriber's goroutine to the ctx passed at registration.
-	subscriberCtx context.Context
 }
 
 // PluginFactory parses the raw plugin configuration and returns a configured
@@ -141,6 +138,12 @@ func PluginFactory(name string, rawParameters *json.Decoder, handle plugin.Handl
 // The kvcache indexer, KV-events pool, and any local ZMQ subscriber start
 // in background goroutines bound to ctx.
 func New(ctx context.Context, name string, config PluginConfig) (*Producer, error) {
+	if config.KVEventsConfig == nil {
+		config.KVEventsConfig = kvevents.DefaultConfig()
+	}
+	if config.KVEventsConfig.DiscoverPods && config.KVEventsConfig.ZMQEndpoint != "" {
+		return nil, errors.New("per-pod discovery and a global KV-events socket are mutually exclusive")
+	}
 	adapter, err := prefixEngineAdapter(config.KVEventsConfig)
 	if err != nil {
 		return nil, err
@@ -169,20 +172,42 @@ func New(ctx context.Context, name string, config PluginConfig) (*Producer, erro
 		return nil, fmt.Errorf("failed to create KVBlockScorer: %w", err)
 	}
 
+	var sources *sourceEvents
+	if config.KVEventsConfig.DiscoverPods {
+		sources = newSourceEvents(ctx, indexer.KVBlockIndex(), adapter, config.KVEventsConfig.TopicFilter)
+		adapter = sources
+	}
 	pool := kvevents.NewPool(config.KVEventsConfig, indexer.KVBlockIndex(), tokenProcessor, adapter)
 	pool.Start(ctx)
 
-	subscribersManager := kvevents.NewSubscriberManager(pool)
-	if config.KVEventsConfig.ZMQEndpoint != "" {
-		if err := subscribersManager.EnsureSubscriber(ctx, "local-subscriber",
-			config.KVEventsConfig.ZMQEndpoint, config.KVEventsConfig.TopicFilter, false); err != nil {
-			return nil, fmt.Errorf("failed to create local subscriber for global socket mode: %w", err)
+	var subscribersManager subscriberManager
+	if sources != nil {
+		sources.pool = pool
+		subscribersManager = sources
+	} else {
+		manager := kvevents.NewSubscriberManager(pool)
+		subscribersManager = manager
+		if config.KVEventsConfig.ZMQEndpoint != "" {
+			if err := manager.EnsureSubscriber(ctx, "local-subscriber",
+				config.KVEventsConfig.ZMQEndpoint, config.KVEventsConfig.TopicFilter, false); err != nil {
+				manager.Shutdown(ctx)
+				pool.Shutdown(ctx)
+				return nil, fmt.Errorf("failed to create local subscriber for global socket mode: %w", err)
+			}
 		}
 	}
 
 	speculativeCache, speculativeTTL, err := buildSpeculativeCache(ctx, config, indexer.KVBlockIndex())
 	if err != nil {
+		subscribersManager.Shutdown(ctx)
+		if sources == nil {
+			pool.Shutdown(ctx)
+		}
 		return nil, err
+	}
+
+	if sources != nil {
+		go func() { <-ctx.Done(); sources.Shutdown(ctx) }()
 	}
 
 	return &Producer{
@@ -191,13 +216,13 @@ func New(ctx context.Context, name string, config PluginConfig) (*Producer, erro
 		kvBlockScorer:      kvBlockScorer,
 		subscribersManager: subscribersManager,
 		kvEventsConfig:     config.KVEventsConfig,
+		sources:            sources,
 		dk:                 attrprefix.PrefixCacheMatchInfoDataKey.WithNonEmptyProducerName(name),
 		pluginState:        plugin.NewPluginState(ctx),
 		speculativeCache:   speculativeCache,
 		speculativeTTL:     speculativeTTL,
 		speculativeEnabled: config.SpeculativeIndexing,
 		blockSizeTokens:    tokenProcessor.BlockSize(),
-		subscriberCtx:      ctx,
 	}, nil
 }
 
@@ -262,6 +287,15 @@ func (p *Producer) produceFromBlockKeys(ctx context.Context, span trace.Span,
 ) error {
 	logger := log.FromContext(ctx).WithName(p.typedName.String())
 	endpointSet := extractEndpointSet(endpoints)
+	var versions map[string]sourceVersion
+	if p.sources != nil {
+		versions = make(map[string]sourceVersion, len(endpoints))
+		for _, endpoint := range endpoints {
+			if meta := endpoint.GetMetadata(); meta != nil {
+				versions[meta.NamespacedName.String()] = p.sources.snapshot(meta)
+			}
+		}
+	}
 
 	type promptLookup struct {
 		keys      []kvblock.BlockHash
@@ -296,6 +330,10 @@ func (p *Producer) produceFromBlockKeys(ctx context.Context, span trace.Span,
 			continue
 		}
 		addr := fmt.Sprintf("%s:%s", md.Address, md.Port)
+		if p.sources != nil && !p.sources.current(versions[md.NamespacedName.String()]) {
+			ep.Put(p.dk.String(), attrprefix.NewPrefixCacheMatchInfo(0, totalBlocks, p.blockSizeTokens))
+			continue
+		}
 		matchLen := int(aggregatedScores[addr])
 		if matchLen > maxMatch {
 			maxMatch = matchLen
@@ -316,7 +354,7 @@ func (p *Producer) produceFromBlockKeys(ctx context.Context, span trace.Span,
 
 	if p.speculativeEnabled {
 		p.pluginState.Write(request.RequestID, blockKeysStateKey,
-			&blockKeysState{perPromptKeys: perPromptKeys})
+			&blockKeysState{perPromptKeys: perPromptKeys, sources: versions})
 	}
 
 	span.SetAttributes(

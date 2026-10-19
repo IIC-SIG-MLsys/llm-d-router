@@ -18,6 +18,7 @@ package datastore
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"maps"
@@ -313,6 +314,7 @@ func (ds *datastore) podUpdateOrAddIfNotExist(ctx context.Context, pod *corev1.P
 	}
 	pods := []*fwkdl.EndpointMetadata{}
 	activePorts := extractActivePorts(pod, pool.TargetPorts)
+	runtimeID := podRuntimeID(pod)
 	for idx, port := range pool.TargetPorts {
 		if !activePorts.Has(port) {
 			continue
@@ -325,6 +327,8 @@ func (ds *datastore) podUpdateOrAddIfNotExist(ctx context.Context, pod *corev1.P
 			&fwkdl.EndpointMetadata{
 				NamespacedName: createEndpointNamespacedName(pod, idx),
 				PodName:        pod.Name,
+				PodUID:         pod.UID,
+				PodRuntimeID:   runtimeID,
 				NodeName:       pod.Spec.NodeName,
 				Address:        pod.Status.PodIP,
 				Port:           strconv.Itoa(port),
@@ -487,4 +491,17 @@ func createEndpointNamespacedName(pod *corev1.Pod, idx int) types.NamespacedName
 		Name:      pod.Name + "-rank-" + strconv.Itoa(idx),
 		Namespace: pod.Namespace,
 	}
+}
+
+// Include regular sidecars: their restarts cause a safe cache miss, never a stale hit.
+func podRuntimeID(pod *corev1.Pod) string {
+	if len(pod.Status.ContainerStatuses) == 0 {
+		return ""
+	}
+	instances := make([]string, 0, len(pod.Status.ContainerStatuses))
+	for _, status := range pod.Status.ContainerStatuses {
+		instances = append(instances, fmt.Sprintf("%d:%s:%d:%d:%s", len(status.Name), status.Name, status.RestartCount, len(status.ContainerID), status.ContainerID))
+	}
+	slices.Sort(instances)
+	return fmt.Sprintf("%x", sha256.Sum256([]byte(strings.Join(instances, "\n"))))
 }
