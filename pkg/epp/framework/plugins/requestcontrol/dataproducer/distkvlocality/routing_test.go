@@ -20,7 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"google.golang.org/grpc"
+	"fmt"
 	"net"
 	"strings"
 	"sync/atomic"
@@ -28,6 +28,7 @@ import (
 
 	controlv1 "github.com/llm-d/llm-d-router/pkg/distkvproto"
 	"github.com/llm-d/llm-d-router/pkg/epp/datalayer"
+	fwkdl "github.com/llm-d/llm-d-router/pkg/epp/framework/interface/datalayer"
 	"github.com/llm-d/llm-d-router/pkg/epp/framework/interface/plugin"
 	fwkrh "github.com/llm-d/llm-d-router/pkg/epp/framework/interface/requesthandling"
 	fwksched "github.com/llm-d/llm-d-router/pkg/epp/framework/interface/scheduling"
@@ -38,6 +39,8 @@ import (
 	"github.com/llm-d/llm-d-router/test/utils"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc"
+	"k8s.io/apimachinery/pkg/types"
 )
 
 type routingController struct {
@@ -330,4 +333,27 @@ func TestRoutingCostSeparatesNetworkBytesFromDeviceRestore(t *testing.T) {
 	match.Ranges[1].Transport = ""
 	_, ok = routingCostInfo(17, match)
 	require.False(t, ok)
+}
+
+func TestSGLangRoutingKeepsPodRanksIndependent(t *testing.T) {
+	f := &routingController{lookup: func(_ context.Context, req *controlv1.LookupRoutingRequest) (*controlv1.LookupRoutingResponse, error) {
+		require.Len(t, req.Candidates, 2)
+		require.Equal(t, "default/pod-rank-0", req.Candidates[0].InstanceId)
+		require.Equal(t, "default/pod-rank-1", req.Candidates[1].InstanceId)
+		return &controlv1.LookupRoutingResponse{Header: &controlv1.ResponseHeader{Status: controlv1.Status_STATUS_OK}, Matches: []*controlv1.RoutingMatch{
+			{InstanceId: "default/pod-rank-1", NodeId: "n1", Status: controlv1.Status_STATUS_OK, DevicePrefixTokens: 2, MatchedTokens: 6},
+			{InstanceId: "default/pod-rank-0", NodeId: "n1", Status: controlv1.Status_STATUS_OK, DevicePrefixTokens: 4, MatchedTokens: 0},
+		}}, nil
+	}}
+	p := newRoutingProducer(t, f, "0s")
+	p.devicePrefixProducer = "gpu"
+	eps := make([]fwksched.Endpoint, 2)
+	for i := range eps {
+		eps[i] = fwksched.NewEndpoint(&fwkdl.EndpointMetadata{NamespacedName: types.NamespacedName{Namespace: "default", Name: fmt.Sprintf("pod-rank-%d", i)}, PodName: "pod", NodeName: "n1", Address: "host", Port: fmt.Sprint(8000 + i), RankIndex: i}, nil, nil)
+		count := 2 - i
+		eps[i].Put(attrprefix.PrefixCacheMatchInfoDataKey.WithNonEmptyProducerName("gpu").String(), attrprefix.NewPrefixCacheMatchInfo(count, 5, 2).WithDeviceCachedBlockCount(count))
+	}
+	require.NoError(t, p.Produce(context.Background(), testRequest(), eps))
+	require.Equal(t, 4, matchInfo(eps[0], p.dk.String()).MatchBlocks())
+	require.Equal(t, 8, matchInfo(eps[1], p.dk.String()).MatchBlocks())
 }

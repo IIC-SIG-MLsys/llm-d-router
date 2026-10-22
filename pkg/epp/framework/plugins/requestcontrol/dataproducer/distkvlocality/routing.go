@@ -356,8 +356,12 @@ func routingInstanceID(endpoint fwksched.Endpoint) string {
 	if md == nil {
 		return ""
 	}
-	if md.NamespacedName.Namespace == "" {
-		return md.PodName
+	name := md.NamespacedName.Name
+	if name == "" {
+		name = md.PodName
 	}
-	return md.NamespacedName.Namespace + "/" + md.PodName
+	if md.NamespacedName.Namespace == "" {
+		return name
+	}
+	return md.NamespacedName.Namespace + "/" + name
 }
